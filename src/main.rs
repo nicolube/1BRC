@@ -1,6 +1,10 @@
 use std::{
-    collections::HashMap, env::args, fs::File, sync::{Arc, Mutex}, thread::{self}
+    env::args, fs::File, sync::{Arc, Mutex}, thread::{self}
 };
+
+use hash_table::HashTable;
+
+mod hash_table;
 
 #[derive(Debug, Clone)]
 struct Result {
@@ -10,6 +14,7 @@ struct Result {
     mean: i64,
     count: i64,
 }
+
 
 impl Result {
     fn new(name: &[u8]) -> Self {
@@ -57,7 +62,7 @@ struct Chunk {
     data: Arc<memmap::Mmap>,
     end: usize,
     position: usize,
-    result: HashMap<u64, Result>,
+    result: HashTable<Result>,
 }
 
 impl Chunk {
@@ -66,10 +71,11 @@ impl Chunk {
             data,
             end,
             position: start,
-            result: HashMap::new(),
+            result: HashTable::new(),
         }
     }
 
+    #[inline(always)]
     fn parse_line(&mut self) -> bool {
         // Find next semicolon, skipped 3 bytes because town is at least 3 bytes
         let split_pos = find_next(&self.data, self.position+3, b';');
@@ -84,13 +90,11 @@ impl Chunk {
             key += name[i] as u64;
         }
         // Update or insert new result
-        self.result
-            .entry(key)
-            .and_modify(|fu: &mut Result| fu.update(value))
-            .or_insert_with(|| Result::new(name));
+        self.result.insert_or_update(key, |fu: &mut Result| fu.update(value), || Result::new(name));
         return self.position < self.end;
     }
 
+    #[inline(always)]
     fn parse_value(&self, data: &[u8]) -> i32 {
         let neg = data[0] == b'-';
         let mut result: i32 = 0;
@@ -155,18 +159,15 @@ fn main() {
     }
 
     // Merge results
-    let mut result = HashMap::new();
+    let mut result = HashTable::new();
     for chunk in &chunks {
         let chunk = chunk.lock().unwrap();
-        for (key, value) in &chunk.result {
-            result
-                .entry(key.clone())
-                .and_modify(|fu: &mut Result| fu.merge(value))
-                .or_insert_with(|| value.clone());
+        for  (key, value) in chunk.result.key_set() {
+            result.insert_or_update(key.clone(), |fu: &mut Result| fu.merge(&value), || value.clone());
         }
     }
     let result = result
-        .iter()
+        .into_iter()
         .map(|(_, value)| value.to_string())
         .collect::<Vec<String>>();
     println!("{{{}}}", result.join(", "));
