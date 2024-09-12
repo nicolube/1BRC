@@ -47,9 +47,11 @@ impl Result {
     }
 }
 
-fn find_next(data: &[u8], mut position: usize, char: u8) -> usize {
-    while position < data.len() && data[position] != char {
-        position += 1;
+fn find_next(data: &[u8], position: usize, char: u8) -> usize {
+    for i in position..data.len() {
+        if data[i] == char {
+            return i;
+        }
     }
     return position;
 }
@@ -58,7 +60,7 @@ struct Chunk {
     data: Arc<memmap::Mmap>,
     end: usize,
     position: usize,
-    result: HashMap<u32, Result>,
+    result: HashMap<u64, Result>,
 }
 
 impl Chunk {
@@ -73,11 +75,15 @@ impl Chunk {
 
     fn parse_line(&mut self) -> bool {
         // Split at symicolon
-        let split_pos = find_next(&self.data, self.position, b';');
+        let split_pos = find_next(&self.data, self.position+3, b';');
         let name = &self.data[self.position..split_pos];
         self.position = find_next(&self.data, split_pos + 3, b'\n') + 1;
         let value = self.parse_value(&self.data[split_pos + 1..self.position - 1]);
-        let key = name.iter().fold(0, |acc, &x| acc << 8 | x as u32);
+        let mut key: u64 = 0;
+        for i in 0..name.len() {
+            key *= 31;
+            key += name[i] as u64;
+        }
         self.result
             .entry(key)
             .and_modify(|fu: &mut Result| fu.update(value))
