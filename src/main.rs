@@ -1,5 +1,8 @@
 use std::{
-    env::args, fs::File, sync::{Arc, Mutex}, thread::{self}
+    env::args,
+    fs::File,
+    sync::{Arc, Mutex},
+    thread::{self},
 };
 
 use hash_table::HashTable;
@@ -14,7 +17,6 @@ struct Result {
     mean: i64,
     count: i64,
 }
-
 
 impl Result {
     fn new(name: &[u8]) -> Self {
@@ -78,7 +80,7 @@ impl Chunk {
     #[inline(always)]
     fn parse_line(&mut self) -> bool {
         // Find next semicolon, skipped 3 bytes because town is at least 3 bytes
-        let split_pos = find_next(&self.data, self.position+3, b';');
+        let split_pos = find_next(&self.data, self.position + 3, b';');
         let name = &self.data[self.position..split_pos];
         // Find next newline, skipped 3 bytes because temp at lest 3 bytes (x.x)
         self.position = find_next(&self.data, split_pos + 3, b'\n') + 1;
@@ -90,7 +92,11 @@ impl Chunk {
             key += name[i] as u64;
         }
         // Update or insert new result
-        self.result.insert_or_update(key, |fu: &mut Result| fu.update(value), || Result::new(name));
+        self.result.insert_or_update(
+            key,
+            |fu: &mut Result| fu.update(value),
+            || Result::new(name),
+        );
         return self.position < self.end;
     }
 
@@ -126,9 +132,8 @@ fn main() {
     let mmaped = unsafe { memmap::Mmap::map(&file).unwrap() };
     let mmaped = Arc::new(mmaped);
 
-    let max_threads: usize = thread::available_parallelism().unwrap().into();
-
     // Calculate chunk size for each thread
+    let max_threads: usize = thread::available_parallelism().unwrap().into();
     let chunk_size = mmaped.len() / max_threads;
 
     // Split file into chunks by finding newlines at the end of each chunk
@@ -140,34 +145,39 @@ fn main() {
             next_end = mmaped.len();
         }
         let chunk = Chunk::new(mmaped.clone(), next_start, next_end);
-        chunks.push(Arc::new(Mutex::new(chunk)));
+        chunks.push(chunk);
         next_start = next_end + 1;
     }
 
+    let result = Arc::new(Mutex::new(HashTable::new()));
     // Start threads for each chunk
     let mut threads = Vec::new();
-    for chunk in &chunks {
-        let chunk = chunk.clone();
+    for mut chunk in chunks {
+        let result = result.clone();
         threads.push(thread::spawn(move || {
-            let mut chunk = chunk.lock().unwrap();
             while chunk.parse_line() {}
+
+            let mut result = result.lock().unwrap();
+            for (key, value) in chunk.result.key_set() {
+                result.insert_or_update(
+                    key.clone(),
+                    |fu: &mut Result| fu.merge(&value),
+                    || value.clone(),
+                );
+            }
         }));
     }
+
     // Await all threads
     for thread in threads {
-        thread.join().unwrap();
-    }
-
-    // Merge results
-    let mut result = HashTable::new();
-    for chunk in &chunks {
-        let chunk = chunk.lock().unwrap();
-        for  (key, value) in chunk.result.key_set() {
-            result.insert_or_update(key.clone(), |fu: &mut Result| fu.merge(&value), || value.clone());
+        if !thread.is_finished() {
+            thread.join().unwrap();
         }
     }
+
+    let result = result.lock().unwrap();
     let result = result
-        .into_iter()
+        .key_set()
         .map(|(_, value)| value.to_string())
         .collect::<Vec<String>>();
     println!("{{{}}}", result.join(", "));
